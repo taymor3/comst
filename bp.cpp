@@ -94,49 +94,80 @@ public:
 
 class BTB {
 private:
-    unordered_map<uint32_t, unique_ptr<Data>> map;
-    vector<int> global_hist;
-    vector<int> global_table;
-    int map_size;
-    int hist_size;
-    int tag_size;
-    int fsm_state;
-    bool is_global_table;
-    bool is_global_hist;
+    struct BTBEntry {
+        uint32_t tag;                       // Tag for the BTB entry
+        std::unique_ptr<Data> data;        // Pointer to Data object
+        bool valid;                        // Whether the entry is valid
+
+        BTBEntry() : tag(0), valid(false) {}
+    };
+
+    std::vector<BTBEntry> table;          // Fixed-size BTB table
+    int btbSize;                          // Number of entries in the BTB
+    int tagSize;
+    int histSize;
+    int fsmState;
+    bool isGlobalTable;
+    bool isGlobalHist;
     int shared;
+    std::vector<int> global_hist;
+    std::vector<int> global_table;
 
-public:
-    BTB(unsigned map_size, unsigned hist_size, unsigned tag_size, unsigned fsm_state,
-        bool is_global_table, bool is_global_hist, int shared)
-        : map_size(map_size), hist_size(hist_size), tag_size(tag_size), fsm_state(fsm_state),
-          is_global_table(is_global_table), is_global_hist(is_global_hist), shared(shared) {
-
-        if (is_global_table) {
-            global_table.assign(1 << hist_size, fsm_state);
-        }
-        if (is_global_hist) {
-            global_hist.assign(hist_size, 0);
-        }
+    int compute_index(uint32_t pc) {
+        return (pc >> 2) & (btbSize - 1); // Direct-mapped index
     }
 
-    void add_pc(uint32_t pc) {
-        if (map.find(pc) == map.end()) {
-            map[pc] = make_unique<Data>(pc, tag_size, fsm_state, shared, hist_size, !is_global_table, !is_global_hist, &global_hist, &global_table);
+    uint32_t compute_tag(uint32_t pc) {
+        return (pc >> (2 + log2(btbSize))) & ((1 << tagSize) - 1);
+    }
+
+public:
+    BTB(unsigned btbSize, unsigned histSize, unsigned tagSize, unsigned fsmState,
+        bool isGlobalTable, bool isGlobalHist, int shared)
+        : btbSize(btbSize), histSize(histSize), tagSize(tagSize), fsmState(fsmState),
+          isGlobalTable(isGlobalTable), isGlobalHist(isGlobalHist), shared(shared),
+          table(btbSize) { // Initialize BTB table with btbSize entries
+        if (isGlobalTable) {
+            global_table.assign(1 << histSize, fsmState);
+        }
+        if (isGlobalHist) {
+            global_hist.assign(histSize, 0);
         }
     }
 
     bool predict(uint32_t pc, uint32_t *dst) {
-        add_pc(pc);
-        Data &d = *map[pc];
-        bool flag;
-        *dst = d.data_predict(&flag);
-        return flag;
+        int index = compute_index(pc);
+        uint32_t tag = compute_tag(pc);
+
+        BTBEntry &entry = table[index];
+        if (entry.valid && entry.tag == tag) {
+            // Tag matches, use the entry for prediction
+            bool flag;
+            *dst = entry.data->data_predict(&flag);
+            return flag;
+        }
+
+        // Tag mismatch or entry invalid, predict not taken
+        *dst = pc + 4;
+        return false;
     }
 
     void update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst) {
-        if (map.find(pc) != map.end()) {
-            map[pc]->update(pc, targetPc, taken, pred_dst);
+        int index = compute_index(pc);
+        uint32_t tag = compute_tag(pc);
+
+        BTBEntry &entry = table[index];
+        if (!entry.valid || entry.tag != tag) {
+            // Initialize the entry if tag mismatch or invalid
+            entry.valid = true;
+            entry.tag = tag;
+            entry.data = std::make_unique<Data>(
+                pc, tagSize, fsmState, shared, histSize,
+                !isGlobalTable, !isGlobalHist, &global_hist, &global_table);
         }
+
+        // Update the entry
+        entry.data->update(pc, targetPc, taken, pred_dst);
     }
 };
 
