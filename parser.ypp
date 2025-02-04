@@ -1,0 +1,1149 @@
+/* Bison Prologue*/
+%{
+	#include "part3_helpers.h"
+	
+	using namespace std;
+
+	extern int yylex();
+	extern int yylineno;
+    extern const char* yytext;
+	
+	Node *root_node;		//root node of parse tree
+	Vec_buf code_buffer;	//buffer to store the riski commands
+	variable_table var_table;
+	Function_Table func_table;
+	
+	void yyerror(const char*);
+	void semantic_err(string err);
+	void operational_err(string err);
+%}
+
+/* Bison Declarations */
+//no special precedence/associativity
+%token INT FLOAT VOID WRITE READ OPTIONAL WHILE DO IF RETURN ID INTEGERNUM REALNUM STR '{' '}' '[' ']' ',' ';' ':'
+//precedence and associativity as in C
+%right ASSIGN
+%left OR
+%left AND
+%left RELOP
+%left ADDOP
+%left MULOP
+%right NOT '(' ')'  // solving casting-mulop/addop conflicts
+
+// solving else-then conflict
+%precedence THEN 
+%precedence ELSE 
+
+
+/* Bison Grammar rules */
+%%
+
+PROGRAM :	FDEFS	{ 		//---------------------------------------------rule below finished---------------------------------------------
+				root_node = new Node();		
+			}
+;
+
+FDEFS :		FDEFS FUNC_DEF_API {	//mid rule action@@@-------------------rule below finished---------------------------------------------
+				//1.casting
+				FuncApiSymbol* func_def_api1 = dynamic_cast<FuncApiSymbol*>($2);	
+				//2.check function
+				Function_Table_Entry* func_entry = func_table.find_func_entry(func_def_api1->func_id);
+				if(func_entry == NULL){		//not in symbol table - add it
+					func_entry = func_table.insert_func_entry(func_def_api1->ret_type, func_def_api1->func_id, func_def_api1->func_args);
+				}
+				else{	//the function is defined
+					if(!func_entry->is_matching(func_def_api1->ret_type, func_def_api1->func_id, func_def_api1->func_args)){
+						string err = string("rule 3: definition of function '") + func_def_api1->func_id + "' doesn't match it's declaration";
+						semantic_err(err);
+					}
+					if(func_entry->def_line != -1){	//function already defined
+						string err = string("redefinition of function '") + func_def_api1->func_id + "'";
+						semantic_err(err);
+					}
+				}
+				//3. assignments
+				func_entry->func_args = func_def_api1->func_args;
+				func_table.curr_func_entry = func_entry;
+				var_table.func_args = func_entry->func_args;
+				func_entry->define_and_backpatch(code_buffer.nextquad());
+			}
+			BLK { 
+				$$ = new Node();
+				StmtSymbol *blk1 = dynamic_cast<StmtSymbol*>($4);	
+
+				code_buffer.backpatch(blk1->nextlist, code_buffer.nextquad());
+				string ret =  "RETRN";
+				code_buffer.emit(ret);	//rule 5: in case no explicit return, ensure returning to caller
+
+			}
+			| FDEFS FUNC_DEC_API { 
+				//1.casting
+				$$ = new Node();
+				FuncApiSymbol* func_dec_api1 = dynamic_cast<FuncApiSymbol*>($2);	
+				//2.check function
+				Function_Table_Entry* func_entry = func_table.find_func_entry(func_dec_api1->func_id);
+				if(func_entry == NULL){		//not in symbol table - add it
+					func_entry = func_table.insert_func_entry(func_dec_api1->ret_type, func_dec_api1->func_id, func_dec_api1->func_args);
+				}
+				else{	//the function is defined
+					if(!func_entry->is_matching(func_dec_api1->ret_type, func_dec_api1->func_id, func_dec_api1->func_args)){
+						string err = string("redeclaration of function '") + func_dec_api1->func_id + "'";
+						semantic_err(err);
+					}
+				}
+			}
+			| /* epsilon */ { 
+				$$ = new Node();
+			}
+;
+
+FUNC_DEC_API : TYPE ID '(' ')' ';' { //---------------------------------------------rule below finished------------------------------------
+		//1.casting
+		$$ = new FuncApiSymbol();
+		FuncApiSymbol* func_dec_api0 = dynamic_cast<FuncApiSymbol*>($$);
+		TypeSymbol *type1 = dynamic_cast<TypeSymbol*>($1);	
+        Terminal *id1 = dynamic_cast<Terminal*>($2);	
+		//2.assignments
+		func_dec_api0->ret_type = type1->type_value;
+		func_dec_api0->func_id = id1->terminal_value;
+	}
+	| TYPE ID '(' FUNC_ARGLIST ')' ';'	{ //---------------------------------------------rule below finished-------------------------------
+		//1.casting
+		$$ = new FuncApiSymbol();
+		FuncApiSymbol* func_dec_api0 = dynamic_cast<FuncApiSymbol*>($$);	
+		TypeSymbol *type1 = dynamic_cast<TypeSymbol*>($1);	
+        Terminal *id1 = dynamic_cast<Terminal*>($2);	
+		FuncArgsSymbol* func_arglist1 = dynamic_cast<FuncArgsSymbol*>($4);	
+		//2.assignments
+		func_dec_api0->ret_type = type1->type_value;
+		func_dec_api0->func_id = id1->terminal_value;
+		func_dec_api0->func_args = func_arglist1->args;
+	}
+	| TYPE ID '(' FUNC_DEC_ARGLIST_OPT ')' ';' { //+++++++++++++++++++++++++++++rule contains optional++++not implemented++++++++++++++++++
+		
+	}
+	| TYPE ID '(' FUNC_ARGLIST ',' FUNC_DEC_ARGLIST_OPT ')' ';' { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+
+		
+	}
+;
+
+FUNC_DEC_ARGLIST_OPT : FUNC_DEC_ARGLIST_OPT',' DCL_OPT { //+++++++++++++++++++++++++++++rule contains optional++++not implemented++++++++++
+		
+	} 
+	| DCL_OPT {		//+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+	}
+;
+
+DCL_OPT : ID ':' OPTIONAL TYPE { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+	}
+	| ID',' DCL_OPT {		//+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+	}
+;
+
+FUNC_DEF_API : TYPE ID '(' ')' { 
+		//1.casting
+		$$ = new FuncApiSymbol();
+		FuncApiSymbol* func_def_api0 = dynamic_cast<FuncApiSymbol*>($$);	
+		TypeSymbol *type1 = dynamic_cast<TypeSymbol*>($1);	
+        Terminal *id1 = dynamic_cast<Terminal*>($2);	
+		//2.assignments
+		func_def_api0->ret_type = type1->type_value;
+		func_def_api0->func_id = id1->terminal_value;
+	}
+	| TYPE ID '(' FUNC_ARGLIST ')' { 
+		//1.casting
+		$$ = new FuncApiSymbol();
+		FuncApiSymbol* func_def_api0 = dynamic_cast<FuncApiSymbol*>($$);	
+		TypeSymbol *type1 = dynamic_cast<TypeSymbol*>($1);	
+        Terminal *id1 = dynamic_cast<Terminal*>($2);	
+		FuncArgsSymbol* func_arglist1 = dynamic_cast<FuncArgsSymbol*>($4);	
+		//2.assignments
+		func_def_api0->ret_type = type1->type_value;
+		func_def_api0->func_id = id1->terminal_value;
+		func_def_api0->func_args = func_arglist1->args;
+
+	}
+	| TYPE ID '(' FUNC_DEF_ARGLIST_OPT ')' { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+
+	}
+	| TYPE ID '(' FUNC_ARGLIST ',' FUNC_DEF_ARGLIST_OPT ')' { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+
+	}
+;
+
+FUNC_DEF_ARGLIST_OPT : FUNC_DEF_ARGLIST_OPT ',' DCL_OPT_VAL { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+
+	}
+
+	| DCL_OPT_VAL { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+
+	}
+;
+
+DCL_OPT_VAL : ID ASSIGN NUM ':' OPTIONAL TYPE { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+	}
+	| ID ASSIGN NUM ',' DCL_OPT_VAL { //+++++++++++++++++++++++++++++rule contains optional++++not implemented+++++++++++++++++++++++
+		
+	}
+;
+
+FUNC_ARGLIST : FUNC_ARGLIST ',' DCL { //-----------------------------------rule below finished---------------------------------------------
+		//1.casting
+		$$=new FuncArgsSymbol();
+        FuncArgsSymbol* func_arglist0 = dynamic_cast<FuncArgsSymbol*>($$);	
+		FuncArgsSymbol* func_arglist1 = dynamic_cast<FuncArgsSymbol*>($1);	
+        DclSymbol* dcl1 = dynamic_cast<DclSymbol*>($3);	
+		//2.check parameters - if needed we do assignments
+		func_arglist0->args = func_arglist1->args;	//parent symbol gets child symbol argument list
+		for(string id : dcl1->dcl_list){
+            for(Arg_dcl arg_i : func_arglist0->args){
+				if(arg_i.id == id){	//duplicate name for that variable
+					string err = string("rule 6: redeclaration of variable '") + id + "'";
+					semantic_err(err);
+				}
+			}
+			//variable doesn't exist in func list, so we add it
+			Arg_dcl arg = {id, dcl1->id_type};
+            func_arglist0->args.push_back(arg);
+        }
+
+	}
+	| DCL { 
+		//1.casting
+		$$=new FuncArgsSymbol();
+        FuncArgsSymbol* func_arglist0 = dynamic_cast<FuncArgsSymbol*>($$);	
+        DclSymbol* dcl1 = dynamic_cast<DclSymbol*>($1);	
+		//2.assignments
+		//for every variable in declaration list, we create argument and add it to function argument list
+        for(string id : dcl1->dcl_list){
+            Arg_dcl arg = {id, dcl1->id_type};
+            func_arglist0->args.push_back(arg);
+        }
+	}
+;
+
+BLK : '{' {	//mid rule action@@@-------------------------------------------rule below finished---------------------------------------------
+		var_table.add_block_table();	//add var table for this block
+		//add all the variables to the created block so it knows them
+		if(var_table.func_args.size() > 0){
+			for(Arg_dcl arg : var_table.func_args){
+				var_table.block_tables.front().insert_variable(arg.id, arg.type);
+			}
+			var_table.func_args.clear();	//empty the list of arguments
+		}
+
+	}	//end mid rule action
+	STLIST '}' { 
+		$$=new StmtSymbol();
+        StmtSymbol *blk0 = dynamic_cast<StmtSymbol*>($$);	
+        StmtSymbol *stlist1 = dynamic_cast<StmtSymbol*>($3);	
+
+        blk0->nextlist = stlist1->nextlist;
+        var_table.remove_block_table();		//remove the block table when exiting the block
+	}
+;
+
+DCL : ID ':' TYPE {  	//-------------------------------------------------rule below finished---------------------------------------------
+		//1.casting
+		$$ = new DclSymbol();
+		DclSymbol* dcl0 = dynamic_cast<DclSymbol*>($$);	
+		Terminal* id1 = dynamic_cast<Terminal*>($1);	
+		TypeSymbol* type1 = dynamic_cast<TypeSymbol*>($3);	
+		//2.var check
+		if(type1->type_value == void_t){
+            semantic_err("rule 2: can't declare variable of type void");
+		}
+        //3.assignments
+        dcl0->id_type = type1->type_value;
+        dcl0->dcl_list.push_front(id1->terminal_value);
+	}
+	| ID ',' DCL { 
+		//1.casting
+		$$ = new DclSymbol();
+		DclSymbol* dcl0 = dynamic_cast<DclSymbol*>($$);	
+		Terminal* id1 = dynamic_cast<Terminal*>($1);	
+		DclSymbol* dcl1 = dynamic_cast<DclSymbol*>($3);	
+		//2.var check
+		//check if variable is already declared in this scope
+		auto it = dcl1->dcl_list.begin();
+		while(it != dcl1->dcl_list.end()){
+			if(*it == id1->terminal_value){
+				string err = string("rule 6: redeclaration of variable '") + id1->terminal_value + "'";
+				semantic_err(err);
+			}
+			it++;
+		}
+		//3.assignments
+		dcl0->id_type = dcl1->id_type;
+        dcl0->dcl_list = dcl1->dcl_list;
+        dcl0->dcl_list.push_front(id1->terminal_value);
+
+	}
+;
+
+TYPE : INT { 	//---------------------------------------------------------rule below finished---------------------------------------------
+		$$ = new TypeSymbol();
+		TypeSymbol* type0 = dynamic_cast<TypeSymbol*>($$);	
+		type0->type_value = int_;	
+	}
+	| FLOAT { 
+		$$ = new TypeSymbol();
+		TypeSymbol* type0 = dynamic_cast<TypeSymbol*>($$);	
+		type0->type_value = float_;	
+	}
+	| VOID { 
+		$$ = new TypeSymbol();
+		TypeSymbol* type0 = dynamic_cast<TypeSymbol*>($$);	
+		type0->type_value = void_t;	
+	}
+;
+
+STLIST : STLIST M STMT {	//---------------------------------------------rule below finished---------------------------------------------
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* stlist0 = dynamic_cast<StmtSymbol*>($$);
+        StmtSymbol* stlist1 = dynamic_cast<StmtSymbol*>($1);
+        Marker_M_Symbol* M1 = dynamic_cast<Marker_M_Symbol*>($2);
+        StmtSymbol* stmt1 = dynamic_cast<StmtSymbol*>($3);
+		//2.control flow
+		code_buffer.backpatch(stlist1->nextlist, M1->quad);
+        stlist0->nextlist.merge(stmt1->nextlist);
+	}
+	| /* epsilon */ { 
+		$$ = new StmtSymbol();
+	}
+;
+
+STMT : DCL ';' { 		//---------------------------------------------rule below finished-------------------------------------------------
+		//1.casting
+		$$ = new StmtSymbol();
+		DclSymbol* dcl1 = dynamic_cast<DclSymbol*>($1);	
+		//2. var check
+		for(string id : dcl1->dcl_list){
+			//check if variable is already declared in this scope
+			if(var_table.find_var_in_block(id)){
+				string err = string("rule 6: redeclaration of variable '") + id + "'";
+				semantic_err(err);
+			}
+			var_table.block_tables.front().insert_variable(id, dcl1->id_type);	//add this variable to the inner-most block
+		}
+		//3. add var to the stack
+		string three_add_code = string("ADD2I") + " " + SP + " " + SP + " " + to_string(dcl1->dcl_list.size() * 4);	//update stack
+		code_buffer.emit(three_add_code);
+	}
+	| ASSN { 		
+		$$ = new StmtSymbol();
+	}
+	| EXP ';' {		
+		$$ = new StmtSymbol();
+	}
+	| CNTRL { 
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* stmt0 = dynamic_cast<StmtSymbol*>($$);	
+		StmtSymbol* cntrl1 = dynamic_cast<StmtSymbol*>($1);	
+		//2.control flow
+		stmt0->nextlist = cntrl1->nextlist;
+	}
+	| read { 
+		$$ = new StmtSymbol();
+	}
+	| write { 
+		$$ = new StmtSymbol();
+	}
+	| return { 
+		$$ = new StmtSymbol();
+	}
+	| BLK {
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* stmt0 = dynamic_cast<StmtSymbol*>($$);	
+		StmtSymbol* blk1 = dynamic_cast<StmtSymbol*>($1);	
+		//2.control flow
+		stmt0->nextlist = blk1->nextlist;
+	}
+;
+
+return : RETURN EXP ';' {		//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new Node();
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($2);	
+		//2.check return types
+		if(func_table.curr_func_entry->ret_type != exp1->exp_type){
+            semantic_err("rule 1: assignment between different types is not allowed");
+		} 
+
+		if(exp1->exp_type == void_t){	
+            semantic_err("rule 2: can't assign from variable of type void");	
+		}
+		//3.move return value to defined return register
+		string three_add_code;
+		if(exp1->exp_type == int_){
+            three_add_code = string("COPYI") + " " + RT_I + " " + exp1->place;
+			code_buffer.emit(three_add_code);
+		}
+        else if(exp1->exp_type == float_){
+            three_add_code = string("COPYF") + " " + RT_F + " " + exp1->place;
+			code_buffer.emit(three_add_code);
+		}
+		string ret =  "RETRN";
+		code_buffer.emit(ret);
+	}
+	| RETURN';' { 
+		$$ = new Node();
+		if(func_table.curr_func_entry->ret_type != void_t){
+            semantic_err("return with no value, in non-void function");
+		}
+        string ret =  "RETRN";
+		code_buffer.emit(ret);
+	}
+;
+
+write : WRITE '(' EXP ')' ';' { //---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new Node();
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($3);	
+		//2.execute assembly
+		string three_add_code;
+		string letter_type;
+        if(exp1->exp_type == int_){
+            letter_type = "I";
+		}
+        else if(exp1->exp_type == float_){
+            letter_type = "F";
+		}
+		else{	//type == void_t)
+            semantic_err("rule 2: can't write to variable of type void");
+		}
+		three_add_code = string("PRNT") + letter_type + " " + exp1->place;
+		code_buffer.emit(three_add_code);
+
+	}
+	| WRITE '(' STR ')' ';' { 
+		//1.casting
+		$$ = new Node();
+		Terminal* str1 = dynamic_cast<Terminal*>($3);	
+		//2.execute assembly
+		//check special character within string
+		string print_ascii;
+		string str = str1->terminal_value;
+		for(int i = 0; i < str.length(); i++){
+			if(str[i] == '\\'){
+                i++;
+                if(str[i] == 'n'){
+                    print_ascii = "PRNTC 10";
+					code_buffer.emit(print_ascii);	//ASCII value of \n
+				}
+				else if(str[i] == 't'){
+                    print_ascii = "PRNTC 9";
+					code_buffer.emit(print_ascii);	//ASCII value of \t
+				}
+				else if(str[i] == '"'){
+                    print_ascii = "PRNTC 34";
+					code_buffer.emit(print_ascii);	//ASCII value of "
+				}
+                else{	// backslash with no meaning, error
+                        operational_err("illegal use of \\");
+                }
+            }
+			else {	//no special character
+                string three_add_code = string("PRNTC") + " " + to_string(int(str[i]));		//print ascii value
+				code_buffer.emit(three_add_code);
+            }
+		}
+	}
+;
+// Nadav reached here
+read : READ '(' LVAL ')' ';' { 	//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new Node();
+		Node* read0 = dynamic_cast<Node*>($$);	
+		ExpSymbol* lval1 = dynamic_cast<ExpSymbol*>($3);	
+		//2.execute assembly
+		string three_add_code;
+		string letter_type = "I";
+		if(lval1->exp_type == float_){
+			letter_type = "F";
+		}
+		else if(lval1->exp_type == void_t){		
+			semantic_err("rule 2: can't read to variable of type void");
+		}
+		string temp_reg = var_table.block_tables.front().next_temp_reg(lval1->exp_type);
+		three_add_code = string("READ")+letter_type + " " + temp_reg;
+		code_buffer.emit(three_add_code);
+		three_add_code = string("STOR")+letter_type + " " + temp_reg + " " + lval1->place + " " + "0";	
+		code_buffer.emit(three_add_code);
+		
+
+	}
+;
+
+ASSN : LVAL ASSIGN EXP ';' {	//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* assn0 = dynamic_cast<StmtSymbol*>($$);	
+		ExpSymbol* lval1 = dynamic_cast<ExpSymbol*>($1);	
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($3);	
+		//2.check same types
+		if(lval1->exp_type != exp1->exp_type){	
+			semantic_err("rule 1: assignment between different types is not allowed");
+		}
+		//3.execute assembly
+		string letter_type = "I";
+		if(lval1->exp_type == float_){
+			letter_type = "F";
+		}
+		else if(lval1->exp_type == void_t){		
+			semantic_err("rule 2: can't assign to variable of type void");
+		}
+		string three_add_code = string("STOR")+letter_type + " " + exp1->place + " " + lval1->place + " " + "0";	
+		code_buffer.emit(three_add_code);
+
+	}
+;
+
+LVAL : ID {     		//---------------------------------------------rule below finished-------------------------------------------------
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* lval0 = dynamic_cast<ExpSymbol*>($$);	
+		Terminal* id1 = dynamic_cast<Terminal*>($1);	
+
+		//2.checking if variable ID is declared
+		Var_Table_Entry var_entry;
+		if(!var_table.is_var_exist(var_entry, id1->terminal_value)){
+			string err = "variable '" + id1->terminal_value + "' is not declared";
+			semantic_err(err);
+		}
+		//3.execute assembly
+		string three_add_code;
+		string temp_reg = var_table.block_tables.front().next_temp_reg(int_);
+		three_add_code = string("ADD2I") + " " + temp_reg + " " + DP + " " + to_string(var_entry.offset);
+		code_buffer.emit(three_add_code);
+		//4.assignments
+        lval0->place = temp_reg;		//update parent symbol place
+		lval0->exp_type = var_entry.type;	//update parent symbol type
+
+		if(var_entry.type == float_){	//if variable type is float
+                    string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+                    three_add_code = string("CITOF") + " " + float_reg + " " + temp_reg;
+					code_buffer.emit(three_add_code);
+                    lval0->place = float_reg;
+        }
+	}
+;
+
+CNTRL : IF BEXP THEN M STMT ELSE N M STMT {     //--------------------------------------rule below finished--------------------------------
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* cntrl0 = dynamic_cast<StmtSymbol*>($$);	
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($2);	
+		Marker_M_Symbol* M1 = dynamic_cast<Marker_M_Symbol*>($4);	
+		StmtSymbol* stmt1 = dynamic_cast<StmtSymbol*>($5);	
+		Marker_N_Symbol* N1 = dynamic_cast<Marker_N_Symbol*>($7);	
+		Marker_M_Symbol* M2 = dynamic_cast<Marker_M_Symbol*>($8);	
+		StmtSymbol* stmt2 = dynamic_cast<StmtSymbol*>($9);	
+		//2.control flow
+		code_buffer.backpatch(bexp1->truelist, M1->quad);
+        code_buffer.backpatch(bexp1->falselist, M2->quad);
+        cntrl0->nextlist.merge(N1->nextlist);
+        cntrl0->nextlist.merge(stmt1->nextlist);
+        cntrl0->nextlist.merge(stmt2->nextlist);
+
+	}
+	| IF BEXP THEN M STMT { 
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* cntrl0 = dynamic_cast<StmtSymbol*>($$);	
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($2);	
+		Marker_M_Symbol* M1 = dynamic_cast<Marker_M_Symbol*>($4);	
+		StmtSymbol* stmt1 = dynamic_cast<StmtSymbol*>($5);	
+		//2.control flow
+		code_buffer.backpatch(bexp1->truelist, M1->quad);
+		cntrl0->nextlist.merge(bexp1->falselist);
+		cntrl0->nextlist.merge(stmt1->nextlist);
+
+	}
+	| WHILE M BEXP DO M STMT { 
+		//1.casting
+		$$ = new StmtSymbol();
+		StmtSymbol* cntrl0 = dynamic_cast<StmtSymbol*>($$);	
+		Marker_M_Symbol* M1 = dynamic_cast<Marker_M_Symbol*>($2);
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($3);	
+		Marker_M_Symbol* M2 = dynamic_cast<Marker_M_Symbol*>($5);
+		StmtSymbol* stmt1 = dynamic_cast<StmtSymbol*>($6);	
+		//2.control flow
+		code_buffer.backpatch(bexp1->truelist, M2->quad);
+		code_buffer.backpatch(stmt1->nextlist, M1->quad);
+		cntrl0->nextlist.merge(bexp1->falselist);
+		string three_add_code = string("UJUMP") + " " + to_string(M1->quad);
+		code_buffer.emit(three_add_code);
+	}
+;
+
+BEXP : BEXP OR M BEXP {    		//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new BexpSymbol();
+		BexpSymbol* bexp0 = dynamic_cast<BexpSymbol*>($$);	
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($1);	
+		Marker_M_Symbol* M = dynamic_cast<Marker_M_Symbol*>($3); 
+		BexpSymbol* bexp2 = dynamic_cast<BexpSymbol*>($4);	
+		//2.control flow
+		code_buffer.backpatch(bexp1->falselist, M->quad);
+        bexp0->truelist.merge(bexp1->truelist);
+        bexp0->truelist.merge(bexp2->truelist);
+        bexp0->falselist.merge(bexp2->falselist);
+	} 
+	| BEXP AND M BEXP { 
+		//1.casting
+		$$ = new BexpSymbol();
+		BexpSymbol* bexp0 = dynamic_cast<BexpSymbol*>($$);	 
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($1);	 
+		Marker_M_Symbol* M = dynamic_cast<Marker_M_Symbol*>($3); 
+		BexpSymbol* bexp2 = dynamic_cast<BexpSymbol*>($4);	
+		//2.control flow
+		code_buffer.backpatch(bexp1->truelist, M->quad);
+		bexp0->truelist.merge(bexp2->truelist);	
+		bexp0->falselist.merge(bexp1->falselist);
+		bexp0->falselist.merge(bexp2->falselist);
+	}
+	| NOT BEXP { 
+		//1.casting
+		$$ = new BexpSymbol();
+		BexpSymbol* bexp0 = dynamic_cast<BexpSymbol*>($$);
+		BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($2);
+		//2.control flow
+		//swap true and false lists in assignment to parent symbol
+		bexp0->truelist.merge(bexp1->falselist);
+		bexp0->falselist.merge(bexp1->truelist);
+	}
+	| EXP RELOP EXP { 
+		//1.casting
+		$$ = new BexpSymbol();
+		BexpSymbol* bexp0 = dynamic_cast<BexpSymbol*>($$);	 
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($1);	
+		Terminal* relop2 = dynamic_cast<Terminal*>($2);	
+		ExpSymbol* exp2 = dynamic_cast<ExpSymbol*>($3);	
+
+		//2.check different types and if void type
+		if(exp1->exp_type != exp2->exp_type){	
+			semantic_err("RELOP operation between different types is not allowed");
+		}
+		if(exp1->exp_type == void_t || exp2->exp_type == void_t){	
+			semantic_err("RELOP operation is not allowed on type void");
+		}
+		//3. execute relop command
+		string three_add_code;
+		string result_reg = var_table.block_tables.front().next_temp_reg(int_);	//assume it's int, otherwise need casting
+		string letter_type = "I";
+		if(exp1->exp_type == float_){
+			letter_type = "F";
+		}
+		//if else on all relop operators
+		if(relop2->terminal_value == "=="){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SEQUF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SEQUI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BNEQZ") + " " + result_reg;	//expressions equal --> res=1 
+			code_buffer.emit(three_add_code); 
+		}
+		else if(relop2->terminal_value == "<>"){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SNEQF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SNEQI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BNEQZ") + " " + result_reg;	
+			code_buffer.emit(three_add_code); 
+		}
+		else if(relop2->terminal_value == "<"){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SLETF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SLETI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BNEQZ") + " " + result_reg;	
+			code_buffer.emit(three_add_code); 
+		}
+		else if(relop2->terminal_value == "<="){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SGRTF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SGRTI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BREQZ") + " " + result_reg;	//exp1 <= exp2 --> res=0 
+			code_buffer.emit(three_add_code); 
+		}
+		else if(relop2->terminal_value == ">"){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SGRTF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SGRTI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BNEQZ") + " " + result_reg;	
+			code_buffer.emit(three_add_code); 
+		}
+		else if(relop2->terminal_value == ">="){
+			if(exp1->exp_type == float_){
+				string float_reg = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("SLETF") + " " + float_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+				//now casting the result to int
+				three_add_code = string("CFTOI") + " " + result_reg + " " + float_reg;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type int, no casting
+				three_add_code = string("SLETI") + " " + result_reg + " " + exp1->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			bexp0->truelist.push_back(code_buffer.nextquad());
+            three_add_code = string("BREQZ") + " " + result_reg;	//exp1 <= exp2 --> res=0 
+			code_buffer.emit(three_add_code); 
+		}
+		else{
+			operational_err("the operator is not RELOP");
+		}	//end of if else
+
+		bexp0->falselist.push_back(code_buffer.nextquad());	//update parent falselist
+		string jump = "UJUMP";		//next command is jump if relop is false
+		code_buffer.emit(jump);
+
+	} 
+	| '(' BEXP ')' { 
+		//1.casting
+		$$ = new BexpSymbol();
+		BexpSymbol* bexp0 = dynamic_cast<BexpSymbol*>($$);	    
+        BexpSymbol* bexp1 = dynamic_cast<BexpSymbol*>($2);	
+		//2.control flow
+		bexp0->truelist = bexp1->truelist;        
+        bexp0->falselist = bexp1->falselist; 
+	}
+;
+
+EXP : EXP ADDOP EXP {    		//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($1);	
+		Terminal* addop2 = dynamic_cast<Terminal*>($2);	
+		ExpSymbol* exp2 = dynamic_cast<ExpSymbol*>($3);	
+		
+		//2.check different types and if void type
+		if(exp1->exp_type != exp2->exp_type){	
+			semantic_err("ADDOP operation between different types is not allowed");
+		}
+		if(exp1->exp_type == void_t || exp2->exp_type == void_t){	
+			semantic_err("ADDOP operation is not allowed on type void");
+		}
+		//3. execute addop command
+		string three_add_code;
+		string result_reg = var_table.block_tables.front().next_temp_reg(exp1->exp_type);
+		string letter_type = "I";
+		if(exp1->exp_type == float_){
+			letter_type = "F";
+		}
+
+		if(addop2->terminal_value == "+"){
+			three_add_code = string("ADD2") + letter_type + " " + result_reg + " " + exp1->place + " " + exp2->place;
+			code_buffer.emit(three_add_code);
+		}
+		else if(addop2->terminal_value == "-"){
+			three_add_code = string("SUBT") + letter_type + " " + result_reg + " " + exp1->place + " " + exp2->place;
+			code_buffer.emit(three_add_code);
+		}
+		else{	//operational error
+			operational_err("the operator is not ADDOP");
+		}
+		//4.assignments
+		exp0->place = result_reg;		//update parent symbol place
+		exp0->exp_type = exp1->exp_type;	//update parent symbol type
+
+	}
+	| EXP MULOP EXP { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($1);	
+		Terminal* mulop2 = dynamic_cast<Terminal*>($2);	
+		ExpSymbol* exp2 = dynamic_cast<ExpSymbol*>($3);	
+
+		//2.check different types and if void type
+		if(exp1->exp_type != exp2->exp_type){	
+			semantic_err("MULOP operation between different types is not allowed");
+		}
+		if(exp1->exp_type == void_t || exp2->exp_type == void_t){	
+			semantic_err("MULOP operation is not allowed on type void");
+		}
+		//3. execute addop command
+		string three_add_code;
+		string result_reg = var_table.block_tables.front().next_temp_reg(exp1->exp_type);
+		string letter_type = "I";
+		if(exp1->exp_type == float_){
+			letter_type = "F";
+		}
+
+		if(mulop2->terminal_value == "*"){
+			three_add_code = string("MULT") + letter_type + " " + result_reg + " " + exp1->place + " " + exp2->place;
+			code_buffer.emit(three_add_code);
+		}
+		else if(mulop2->terminal_value == "/"){
+			three_add_code = string("DIVD") + letter_type + " " + result_reg + " " + exp1->place + " " + exp2->place;
+			code_buffer.emit(three_add_code);
+		}
+		else{	//operational error
+			operational_err("the operator is not MULOP");
+		}
+		//4.assignments
+		exp0->place = result_reg;		//update parent symbol place
+		exp0->exp_type = exp1->exp_type;	//update parent symbol type
+
+	}
+	| '(' EXP ')' { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		ExpSymbol* exp1 = dynamic_cast<ExpSymbol*>($2);	
+		//2.assignments
+		exp0->place = exp1->place;		//update parent symbol place
+		exp0->exp_type = exp1->exp_type;	//update parent symbol type
+	}
+	| '(' TYPE ')' EXP { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		TypeSymbol* type1 = dynamic_cast<TypeSymbol*>($2);
+		ExpSymbol* exp2 = dynamic_cast<ExpSymbol*>($4);	
+		//2.check different types and if void
+		string three_add_code;
+		if(type1->type_value == exp2->exp_type){	//sam type, no casting needed
+			exp0->place = exp2->place;		//update parent symbol place
+			exp0->exp_type = exp2->exp_type;	//update parent symbol type
+		}
+		else{
+			if(type1->type_value == void_t || exp2->exp_type == void_t){
+				semantic_err("casting from/to type void is not allowed");
+			}	//3.assignments depends on type
+			else if(type1->type_value == int_){	
+				exp0->place = var_table.block_tables.front().next_temp_reg(int_);
+				three_add_code = string("CFTOI") + " " + exp0->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			else{	//type == float_
+				exp0->place = var_table.block_tables.front().next_temp_reg(float_);
+				three_add_code = string("CITOF") + " " + exp0->place + " " + exp2->place;
+				code_buffer.emit(three_add_code);
+			}
+			exp0->exp_type = type1->type_value;	//parent symbol gets the casting type
+		}
+
+	}
+	| ID { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		Terminal* id1 = dynamic_cast<Terminal*>($1);	
+
+		//2.checking if variable ID is declared
+		Var_Table_Entry var_entry;
+		if(!var_table.is_var_exist(var_entry, id1->terminal_value)){
+			string err = "variable '" + id1->terminal_value + "' is not declared";
+			semantic_err(err);
+		}
+		//3.execute assembly
+		string three_add_code;
+		string temp_reg = var_table.block_tables.front().next_temp_reg(var_entry.type);
+		if(var_entry.type == float_){
+			three_add_code = string("CITOF") + " " + DP_F + " " + DP;
+			code_buffer.emit(three_add_code);
+			three_add_code = string("LOADF") + " " + temp_reg + " " + DP_F + " " + to_string(var_entry.offset);
+			code_buffer.emit(three_add_code);
+		}
+		else if(var_entry.type == int_){
+			three_add_code = string("LOADI") + " " + temp_reg + " " + DP + " " + to_string(var_entry.offset);
+			code_buffer.emit(three_add_code);
+		}
+		else{	//type == void 
+			semantic_err("rule 2: can't declare variable of type void");
+		}
+		//4.assignments
+		exp0->place = temp_reg;		//update parent symbol place
+		exp0->exp_type = var_entry.type;	//update parent symbol type
+
+	}
+	| NUM { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		ExpSymbol* num1 = dynamic_cast<ExpSymbol*>($1);	
+		//2.assignments
+		exp0->place = num1->place;		//update parent symbol place
+		exp0->exp_type = num1->exp_type;	//update parent symbol type
+	}
+	| CALL { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* exp0 = dynamic_cast<ExpSymbol*>($$);	
+		ExpSymbol* call1 = dynamic_cast<ExpSymbol*>($1);
+		//2.assignments
+		exp0->place = call1->place;		//update parent symbol place
+		exp0->exp_type = call1->exp_type;	//update parent symbol type
+	}
+;
+
+NUM : INTEGERNUM {   		//---------------------------------------------rule below finished---------------------------------------------
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* num0 = dynamic_cast<ExpSymbol*>($$);	
+		Terminal* int1 = dynamic_cast<Terminal*>($1);	
+		//2.assignments
+		num0->place = var_table.block_tables.front().next_temp_reg(int_);	//update parent symbol place
+		num0->exp_type = int_;		//update parent symbol type
+		//3.execute assembly
+		string three_add_code = string("COPYI") + " " + num0->place + " " + int1->terminal_value;
+		code_buffer.emit(three_add_code);
+	}
+	| REALNUM { 
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* num0 = dynamic_cast<ExpSymbol*>($$);	
+		Terminal* real1 = dynamic_cast<Terminal*>($1);	
+		//2.assignments
+		num0->place = var_table.block_tables.front().next_temp_reg(float_);	//update parent symbol place
+		num0->exp_type = float_;	//update parent symbol type
+		//3.execute assembly
+		string three_add_code = string("COPYF") + " " + num0->place + " " + real1->terminal_value;
+		code_buffer.emit(three_add_code);
+	}
+;
+
+CALL : ID '(' CALL_ARGS ')' {  		//---------------------------------------------rule below finished-------------------------------------
+		//1.casting
+		$$ = new ExpSymbol();
+		ExpSymbol* call0 = dynamic_cast<ExpSymbol*>($$);
+		Terminal* id1 = dynamic_cast<Terminal*>($1);	
+		CallArgsSymbol* call_args1 = dynamic_cast<CallArgsSymbol*>($3);	
+		//2.finds the func 'ID' in function table
+		Function_Table_Entry* func_entry = func_table.find_func_entry(id1->terminal_value);
+		if(func_entry == NULL){
+			string err = "function '" + id1->terminal_value + "' is not declared";
+			semantic_err(err);
+		}
+		//3.check if number of args are matching
+		if(call_args1->exp_args.size() != func_entry->func_args.size()){
+            string err = string("wrong number of arguments passed to function '") + id1->terminal_value +"'";
+			semantic_err(err);
+		}
+		//4.store caller saved registers and RA,DP, and FP caller registers
+		string three_add_code;
+		var_table.store();	//for each var: Mem[SP++] = var
+        three_add_code = string("STORI") + " " + RA + " " + SP + " " + "0";	//Mem[SP] = RA
+		code_buffer.emit(three_add_code);
+		three_add_code = string("STORI") + " " + DP + " " + SP + " " + "4";	//Mem[SP+1*4] = DP
+        code_buffer.emit(three_add_code); 
+		three_add_code = string("STORI") + " " + FP + " " + SP + " " + "8";	//Mem[SP+2*4] = FP
+        code_buffer.emit(three_add_code); 
+		//5.updating frame pointer 
+		three_add_code = string("ADD2I") + " " + FP + " " + SP + " " + "8";	
+		code_buffer.emit(three_add_code);
+
+		//Cast FP to FP_F 
+        three_add_code = string("CITOF") + " " + FP_F + " " + FP;
+		code_buffer.emit(three_add_code);
+
+		/*****6. pre-call - store arguments, update dp and sp *****/
+		
+		//store arguments for callee in stack before call
+		int i = 1;	
+        auto func_arg_it = func_entry->func_args.begin();
+        auto exp_arg_it = call_args1->exp_args.begin();
+
+		for(;func_arg_it != func_entry->func_args.end();i++, func_arg_it++, exp_arg_it++){
+            
+			if(exp_arg_it->exp_type != func_arg_it->type){
+				string err = string("rule 3: wrong type of argument passed to function '") + func_arg_it->id +"'";
+				semantic_err(err);
+			}
+			//store arguments according to their type
+            if(func_arg_it->type == int_){
+                three_add_code = string("STORI") + " " + exp_arg_it->place + " " + FP + " " + to_string(i * 4);
+				code_buffer.emit(three_add_code);
+            } else if (func_arg_it->type == float_){
+                three_add_code = string("STORF") + " " + exp_arg_it->place + " " + FP_F + " " + to_string(i * 4);
+				code_buffer.emit(three_add_code);
+            } else {
+                string err = string("rule 2: can't pass parameter of type void to function '") + func_arg_it->id +"'";
+				semantic_err(err);
+            }
+		}
+
+		//update DP to point on the first arg
+        three_add_code = string("ADD2I") + + " " DP + " " + FP + " " + to_string(4);
+		code_buffer.emit(three_add_code);
+        //update SP to point above arguments
+		three_add_code = string("ADD2I") + " " + SP + " " + FP + " " + to_string((func_entry->func_args.size() + 1) * 4);
+        code_buffer.emit(three_add_code);
+        
+		//jump to definition line of function
+        three_add_code = string("JLINK") + " " + func_entry->get_func_def_place(code_buffer.nextquad());
+        code_buffer.emit(three_add_code);
+
+		/*****7. post-call - close stack of callee, restore FP,DP,RA and saved registers of caller *****/
+        
+		three_add_code = string("COPYI") + " " + SP + " " + FP;					//SP = FP
+        code_buffer.emit(three_add_code);
+		three_add_code = string("LOADI") + " " + FP + " " + FP + " " + "0";		//FP = Mem[FP]	
+        code_buffer.emit(three_add_code);
+		three_add_code = string("SUBTI") + " " + SP + " " + SP + " " + "8";		//SP-=2*4
+        code_buffer.emit(three_add_code); 
+		three_add_code = string("LOADI") + " " + DP + " " + SP + " " + "4";		//DP = Mem[SP+1*4]
+        code_buffer.emit(three_add_code); 
+		three_add_code = string("LOADI") + " " + RA + " " + SP + " " + "0";		//RA = Mem[SP]
+        code_buffer.emit(three_add_code); 
+        var_table.load();  //for each var: var = Mem[--SP]
+
+		//8.update return type and value of parent symbol
+
+		call0->exp_type = func_entry->ret_type;	//updates parent return type
+        if(func_entry->ret_type == int_){
+                call0->place = var_table.block_tables.front().next_temp_reg(int_);
+                three_add_code = string("COPYI") + " " + call0->place + " " + RT_I;	
+				code_buffer.emit(three_add_code);
+        } else if(func_entry->ret_type == float_){
+                call0->place = var_table.block_tables.front().next_temp_reg(float_);
+                three_add_code = string("COPYF") + " " + call0->place + " " + RT_F;
+				code_buffer.emit(three_add_code);
+        }
+
+	}	//rule closing braces
+;
+
+CALL_ARGS : CALL_ARGLIST { 		//---------------------------------------------rule below finished-----------------------------------------
+		//1.casting
+		$$ = new CallArgsSymbol();
+		CallArgsSymbol* call_arg0 = dynamic_cast<CallArgsSymbol*>($$);	
+		CallArgsSymbol* call_arglist1 = dynamic_cast<CallArgsSymbol*>($1);
+		//2.assignments
+		call_arg0->exp_args = call_arglist1->exp_args;	//parent symbol gets son symbol expressions
+	}
+	| /* epsilon */ { 
+		$$ = new CallArgsSymbol();
+	}
+;
+
+CALL_ARGLIST : CALL_ARGLIST ',' EXP { 		//---------------------------------------------rule below finished-----------------------------
+		//1.casting
+		$$ = new CallArgsSymbol();
+		CallArgsSymbol* call_arglist0 = dynamic_cast<CallArgsSymbol*>($$);	
+		CallArgsSymbol* call_arglist1 = dynamic_cast<CallArgsSymbol*>($1);	
+		ExpSymbol* exp = dynamic_cast<ExpSymbol*>($3);	
+		//2.check if void
+		if(exp->exp_type == void_t){
+			semantic_err("rule 2: can't declare function parameter of type void");
+		}
+		//3.assignments
+		call_arglist0->exp_args = call_arglist1->exp_args;	//parent symbol gets son symbol expressions
+		call_arglist0->exp_args.push_back(*exp);			//adding exp to parent expression vector
+
+	}
+	| EXP { 
+		//1.casting
+		$$ = new CallArgsSymbol();
+		CallArgsSymbol* call_arglist0 = dynamic_cast<CallArgsSymbol*>($$);
+		ExpSymbol* exp = dynamic_cast<ExpSymbol*>($1);	
+		//2.check if void
+		if(exp->exp_type == void_t){
+			semantic_err("rule 2: can't declare func parameter of type void");
+		}
+		//3.assignments
+		call_arglist0->exp_args.push_back(*exp);			//adding exp to parent expression vector
+	}
+;
+
+M : /* epsilon */ {		//---------------------------------------------rule below finished-------------------------------------------------
+		Marker_M_Symbol* M = new Marker_M_Symbol();
+		M->quad = code_buffer.nextquad();
+		$$ = M;
+	}
+;
+
+N : /* epsilon */ {		//---------------------------------------------rule below finished-------------------------------------------------
+		Marker_N_Symbol* N = new Marker_N_Symbol();
+		N->nextlist.push_back(code_buffer.nextquad());
+		string jump = "UJUMP";
+		code_buffer.emit(jump);
+		$$ = N;
+	}
+;
+
+%%
+
+/* Bison Epilogue */
+
+//print syntax errors - code 2
+void yyerror(const char*){
+	printf("Syntax error: '%s' in line number %d\n", yytext, yylineno);
+	exit(2);
+}
+
+//print semantic errors - code 3
+void semantic_err(string err){
+	const char* message = err.c_str();
+	printf("Semantic error: %s in line number %d\n", message, yylineno);
+	exit(3);
+}
+
+//print operational errors - code 9
+void operational_err(string err){
+	const char* message = err.c_str();
+	printf("Operational error: %s\n", message);
+	exit(9);
+}
